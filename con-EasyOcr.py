@@ -14,6 +14,28 @@ logger = logging.getLogger(__name__)
 
 # Inicializar EasyOCR (solo una vez)
 reader = easyocr.Reader(['es'], gpu=False)
+def es_dato_valido(texto, tipo="general"):
+    """Valida si el texto extraído cumple con criterios mínimos."""
+    if not texto:
+        return False
+        
+    if tipo == "numero":
+        # Validar que tenga números y puntos
+        return any(c.isdigit() for c in texto) and '.' in texto
+    
+    elif tipo == "apellidos":
+        # Validación estricta para apellidos
+        return (len(texto) > 4 and 
+                all(c.isupper() or c.isspace() for c in texto) and
+                not any(c.isdigit() for c in texto))
+    
+    elif tipo == "nombres":
+        # Validación más flexible para nombres
+        return (len(texto) >= 2 and 
+                not any(c.isdigit() for c in texto) and
+                ' ' in texto)  # Al menos debe tener un espacio (nombre y apellido)
+    
+    return True
 
 def procesar_imagen(ruta_imagen):
     """Procesa la imagen y extrae el texto usando EasyOCR."""
@@ -51,71 +73,97 @@ def extraer_datos_generales(texto, tipo_cedula):
     palabras_excluidas = ["NUIP", "NOMBRES", "APELLIDOS", "NÚMERO", "NUMERO"]
     
     if tipo_cedula == "vieja":
-        # Primera lógica: Búsqueda por palabras clave
+        # Buscar número
         for i, linea in enumerate(lineas):
             if "NÚMERO" in linea.upper() or "NUMERO" in linea.upper():
                 if i + 1 < len(lineas):
-                    datos["Número"] = lineas[i + 1].strip()
-                    # Buscar apellidos en las siguientes líneas
-                    for j in range(i + 2, len(lineas)):
-                        siguiente_linea = lineas[j].strip()
-                        if siguiente_linea and not any(palabra in siguiente_linea.upper() for palabra in palabras_excluidas):
-                            datos["Apellidos"] = siguiente_linea
-                            break
-                    logger.debug(f"Número encontrado (por palabra clave): {datos.get('Número')}")
+                    numero = lineas[i + 1].strip()
+                    if es_dato_valido(numero, "numero"):
+                        datos["Número"] = numero
+                        logger.debug(f"Número encontrado: {datos['Número']}")
                 break
         
-        # Segunda lógica: Búsqueda por patrón si no se encontró
+        # Segunda búsqueda de número si no se encontró
         if "Número" not in datos:
             for i, linea in enumerate(lineas):
-                if any(c.isdigit() for c in linea) and '.' in linea:
+                if es_dato_valido(linea, "numero"):
                     datos["Número"] = linea.strip()
-                    if i + 1 < len(lineas):
-                        siguiente_linea = lineas[i + 1].strip()
-                        if all(c.isupper() or c.isspace() for c in siguiente_linea):
-                            datos["Apellidos"] = siguiente_linea
-                    logger.debug(f"Número encontrado (por patrón): {datos.get('Número')}")
+                    logger.debug(f"Número encontrado por patrón: {datos['Número']}")
                     break
 
-        # Buscar Nombres (mantener lógica original)
+        # Buscar apellidos por palabra clave
         for i, linea in enumerate(lineas):
             if "APELLIDOS" in linea.upper():
-                if i + 1 < len(lineas):
-                    siguiente_linea = lineas[i + 1].strip()
-                    if not any(palabra in siguiente_linea.upper() for palabra in palabras_excluidas):
-                        datos["Nombres"] = siguiente_linea
-                        logger.debug(f"Nombres encontrados: {datos['Nombres']}")
+                for j in range(i + 1, len(lineas)):
+                    siguiente_linea = lineas[j].strip()
+                    if all(c.isupper() or c.isspace() for c in siguiente_linea) and len(siguiente_linea) > 4:
+                        datos["Apellidos"] = siguiente_linea
+                        logger.debug(f"Apellidos encontrados por palabra clave: {siguiente_linea}")
+                        break
                 break
-                
-        # Si no se encontraron nombres por palabra clave, buscar después de apellidos
+
+        # Si no se encontraron apellidos, buscar después del número
+        if "Apellidos" not in datos and "Número" in datos:
+            for i, linea in enumerate(lineas):
+                if linea.strip() == datos["Número"]:
+                    for j in range(i + 1, len(lineas)):
+                        siguiente_linea = lineas[j].strip()
+                        if all(c.isupper() or c.isspace() for c in siguiente_linea) and len(siguiente_linea) > 4:
+                            datos["Apellidos"] = siguiente_linea
+                            logger.debug(f"Apellidos encontrados después del número: {siguiente_linea}")
+                            break
+                    break
+
+        # Buscar nombres por palabra clave
+        for i, linea in enumerate(lineas):
+            if "NOMBRES" in linea.upper():
+                for j in range(i + 1, len(lineas)):
+                    siguiente_linea = lineas[j].strip()
+                    if all(c.isupper() or c.isspace() for c in siguiente_linea) and len(siguiente_linea) > 2:
+                        datos["Nombres"] = siguiente_linea
+                        logger.debug(f"Nombres encontrados por palabra clave: {siguiente_linea}")
+                        break
+                break
+
+        # Si no se encontraron nombres, buscar después de apellidos
         if "Nombres" not in datos and "Apellidos" in datos:
-            apellidos_index = next((i for i, linea in enumerate(lineas) if linea == datos["Apellidos"]), -1)
-            if apellidos_index != -1 and apellidos_index + 1 < len(lineas):
-                siguiente_linea = lineas[apellidos_index + 1].strip()
-                if all(c.isupper() or c.isspace() for c in siguiente_linea):
-                    datos["Nombres"] = siguiente_linea
-                    logger.debug(f"Nombres encontrados (por posición): {datos['Nombres']}")
+            for i, linea in enumerate(lineas):
+                if linea.strip() == datos["Apellidos"]:
+                    for j in range(i + 1, len(lineas)):
+                        siguiente_linea = lineas[j].strip()
+                        if all(c.isupper() or c.isspace() for c in siguiente_linea) and len(siguiente_linea) > 2:
+                            datos["Nombres"] = siguiente_linea
+                            logger.debug(f"Nombres encontrados después de apellidos: {siguiente_linea}")
+                            break
+                    break
 
     elif tipo_cedula == "nueva":
-        # Mantener lógica existente para cédula nueva
+        # Buscar NUIP
         for i, linea in enumerate(lineas):
             if "NUIP" in linea.upper():
                 if i + 1 < len(lineas):
-                    datos["NUIP"] = lineas[i + 1].strip()
-                    if i + 2 < len(lineas):
-                        siguiente_linea = lineas[i + 2].strip()
-                        if siguiente_linea and not any(palabra in siguiente_linea.upper() for palabra in palabras_excluidas):
-                            datos["Apellidos"] = siguiente_linea
-                    logger.debug(f"NUIP encontrado: {datos['NUIP']}")
+                    nuip = lineas[i + 1].strip()
+                    if es_dato_valido(nuip, "numero"):
+                        datos["NUIP"] = nuip
+                        logger.debug(f"NUIP encontrado: {nuip}")
+                        # Buscar apellidos después del NUIP
+                        for j in range(i + 2, len(lineas)):
+                            siguiente_linea = lineas[j].strip()
+                            if (es_dato_valido(siguiente_linea, "apellidos") and
+                                not any(palabra in siguiente_linea.upper() for palabra in palabras_excluidas)):
+                                datos["Apellidos"] = siguiente_linea
+                                logger.debug(f"Apellidos encontrados después del NUIP: {siguiente_linea}")
+                                break
                 break
         
+        # Buscar nombres
         for i, linea in enumerate(lineas):
             if "NOMBRES" in linea.upper():
                 if i + 1 < len(lineas):
                     siguiente_linea = lineas[i + 1].strip()
                     if not any(palabra in siguiente_linea.upper() for palabra in palabras_excluidas):
                         datos["Nombres"] = siguiente_linea
-                        logger.debug(f"Nombres encontrados: {datos['Nombres']}")
+                        logger.debug(f"Nombres encontrados: {siguiente_linea}")
                 break
     
     return datos
